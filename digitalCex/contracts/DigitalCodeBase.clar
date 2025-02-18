@@ -1,4 +1,5 @@
-;; Digital Exchange with Trader Metrics
+;; Stage 3: Full-Featured Digital Exchange
+;; Commit Message: "feat: Complete implementation with advanced trading features, input validation, and administrative controls"
 
 ;; Contract configuration
 (define-constant owner-address tx-sender)
@@ -27,6 +28,7 @@
     { participant: principal }
     {
         trade-count: uint,
+        quality-score: uint,
         last-active: uint
     }
 )
@@ -50,6 +52,28 @@
 (define-data-var exchange-fee uint u3) ;; 3% fee
 (define-data-var exchange-volume uint u0)
 
+;; Input validators
+(define-private (verify-summary (text (string-ascii 256)))
+    (and 
+        (not (is-eq text ""))
+        (<= (len text) u256)
+    )
+)
+
+(define-private (verify-type (text (string-ascii 64)))
+    (and
+        (not (is-eq text ""))
+        (<= (len text) u64)
+    )
+)
+
+(define-private (verify-token (text (string-ascii 512)))
+    (and
+        (not (is-eq text ""))
+        (<= (len text) u512)
+    )
+)
+
 ;; Helper functions
 (define-private (compute-fee (price uint))
     (/ (* price (var-get exchange-fee)) u100)
@@ -62,16 +86,19 @@
 ;; Core functions
 (define-public (register-content (asking-price uint) 
                                (summary (string-ascii 256)) 
-                               (content-type (string-ascii 64))
+                               (content-type (string-ascii 64)) 
                                (access-token (string-ascii 512)))
     (let
         (
             (current-id (var-get item-counter))
         )
         (asserts! (> asking-price u0) ERR_PRICE_INVALID)
-        (asserts! (not (is-eq summary "")) ERR_INPUT_INVALID)
-        (asserts! (not (is-eq content-type "")) ERR_INPUT_INVALID)
-        (asserts! (not (is-eq access-token "")) ERR_INPUT_INVALID)
+        (asserts! (verify-summary summary) ERR_INPUT_INVALID)
+        (asserts! (verify-type content-type) ERR_INPUT_INVALID)
+        (asserts! (verify-token access-token) ERR_INPUT_INVALID)
+        (asserts! (not (default-to false (get tradeable 
+            (map-get? content-offerings { item-id: current-id })))) 
+            ERR_DUPLICATE_ITEM)
         
         (map-set content-offerings
             { item-id: current-id }
@@ -105,6 +132,7 @@
             (fee-amount (compute-fee total-cost))
             (merchant-share (- total-cost fee-amount))
         )
+        (asserts! (< item-id (var-get item-counter)) ERR_INPUT_INVALID)
         (asserts! (get tradeable item-info) ERR_ITEM_UNAVAILABLE)
         (asserts! (is-eq false (is-eq tx-sender merchant)) ERR_SELF_TRADE_BLOCKED)
         
@@ -123,13 +151,14 @@
         (let
             (
                 (merchant-stats (default-to 
-                    { trade-count: u0, last-active: u0 }
+                    { trade-count: u0, quality-score: u0, last-active: u0 }
                     (map-get? trader-metrics { participant: merchant })))
             )
             (map-set trader-metrics
                 { participant: merchant }
                 {
                     trade-count: (+ (get trade-count merchant-stats) u1),
+                    quality-score: (get quality-score merchant-stats),
                     last-active: block-height
                 }
             )
@@ -140,12 +169,26 @@
     )
 )
 
+(define-public (retrieve-access-token (item-id uint))
+    (let
+        (
+            (purchase-info (unwrap! (map-get? exchange-records 
+                { customer: tx-sender, item-id: item-id }) ERR_UNAUTHORIZED))
+            (content-access (unwrap! (map-get? content-keys 
+                { item-id: item-id }) ERR_ITEM_UNAVAILABLE))
+        )
+        (asserts! (< item-id (var-get item-counter)) ERR_INPUT_INVALID)
+        (ok (get secure-access-token content-access))
+    )
+)
+
 (define-public (modify-price (item-id uint) (updated-price uint))
     (let
         (
             (item-info (unwrap! (map-get? content-offerings { item-id: item-id }) 
                 ERR_ITEM_UNAVAILABLE))
         )
+        (asserts! (< item-id (var-get item-counter)) ERR_INPUT_INVALID)
         (asserts! (is-eq (get owner item-info) tx-sender) ERR_UNAUTHORIZED)
         (asserts! (> updated-price u0) ERR_PRICE_INVALID)
         
@@ -157,6 +200,51 @@
     )
 )
 
+(define-public (delist-content (item-id uint))
+    (let
+        (
+            (item-info (unwrap! (map-get? content-offerings { item-id: item-id }) 
+                ERR_ITEM_UNAVAILABLE))
+        )
+        (asserts! (< item-id (var-get item-counter)) ERR_INPUT_INVALID)
+        (asserts! (is-eq (get owner item-info) tx-sender) ERR_UNAUTHORIZED)
+        
+        (map-set content-offerings
+            { item-id: item-id }
+            (merge item-info { tradeable: false })
+        )
+        (ok true)
+    )
+)
+
+(define-public (update-merchant-rating (merchant principal) (rating uint))
+    (let
+        (
+            (merchant-stats (unwrap! (map-get? trader-metrics { participant: merchant })
+                ERR_UNAUTHORIZED))
+        )
+        (asserts! (<= rating u100) ERR_INPUT_INVALID)
+        (asserts! (is-some (map-get? exchange-records 
+            { customer: tx-sender, merchant: merchant })) ERR_UNAUTHORIZED)
+        
+        (map-set trader-metrics
+            { participant: merchant }
+            (merge merchant-stats { quality-score: rating })
+        )
+        (ok true)
+    )
+)
+
+;; Administrative functions
+(define-public (adjust-fee-rate (new-rate uint))
+    (begin
+        (asserts! (is-eq tx-sender owner-address) ERR_UNAUTHORIZED)
+        (asserts! (<= new-rate u100) ERR_PRICE_INVALID)
+        (var-set exchange-fee new-rate)
+        (ok true)
+    )
+)
+
 ;; Query functions
 (define-read-only (get-content-info (item-id uint))
     (map-get? content-offerings { item-id: item-id })
@@ -164,6 +252,10 @@
 
 (define-read-only (get-trader-info (participant principal))
     (map-get? trader-metrics { participant: participant })
+)
+
+(define-read-only (get-purchase-history (customer principal) (item-id uint))
+    (map-get? exchange-records { customer: customer, item-id: item-id })
 )
 
 (define-read-only (get-exchange-stats)
