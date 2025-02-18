@@ -1,5 +1,5 @@
-;; Stage 3: Full-Featured Digital Exchange
-;; Commit Message: "feat: Complete implementation with advanced trading features, input validation, and administrative controls"
+;; Digital Asset Exchange Smart Contract
+;; Facilitates peer-to-peer trading of digital content on Stacks blockchain
 
 ;; Contract configuration
 (define-constant owner-address tx-sender)
@@ -84,6 +84,8 @@
 )
 
 ;; Core functions
+
+;; List digital content
 (define-public (register-content (asking-price uint) 
                                (summary (string-ascii 256)) 
                                (content-type (string-ascii 64)) 
@@ -122,6 +124,7 @@
     )
 )
 
+;; Acquire digital content
 (define-public (acquire-content (item-id uint))
     (let
         (
@@ -169,6 +172,7 @@
     )
 )
 
+;; Retrieve content access
 (define-public (retrieve-access-token (item-id uint))
     (let
         (
@@ -182,6 +186,7 @@
     )
 )
 
+;; Modify listing price
 (define-public (modify-price (item-id uint) (updated-price uint))
     (let
         (
@@ -200,6 +205,7 @@
     )
 )
 
+;; Remove from marketplace
 (define-public (delist-content (item-id uint))
     (let
         (
@@ -212,24 +218,6 @@
         (map-set content-offerings
             { item-id: item-id }
             (merge item-info { tradeable: false })
-        )
-        (ok true)
-    )
-)
-
-(define-public (update-merchant-rating (merchant principal) (rating uint))
-    (let
-        (
-            (merchant-stats (unwrap! (map-get? trader-metrics { participant: merchant })
-                ERR_UNAUTHORIZED))
-        )
-        (asserts! (<= rating u100) ERR_INPUT_INVALID)
-        (asserts! (is-some (map-get? exchange-records 
-            { customer: tx-sender, merchant: merchant })) ERR_UNAUTHORIZED)
-        
-        (map-set trader-metrics
-            { participant: merchant }
-            (merge merchant-stats { quality-score: rating })
         )
         (ok true)
     )
@@ -252,10 +240,6 @@
 
 (define-read-only (get-trader-info (participant principal))
     (map-get? trader-metrics { participant: participant })
-)
-
-(define-read-only (get-purchase-history (customer principal) (item-id uint))
-    (map-get? exchange-records { customer: customer, item-id: item-id })
 )
 
 (define-read-only (get-exchange-stats)
